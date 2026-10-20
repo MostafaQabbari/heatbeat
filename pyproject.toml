@@ -7,7 +7,9 @@ authors = [
     { name = "MostafaQabbari", email = "mkabary8@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "pydantic>=2.14.1",
+]
 
 [project.scripts]
 heatbeat = "heatbeat:main"
