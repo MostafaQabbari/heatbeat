@@ -91,3 +91,29 @@ def test_property_old_samples_never_change_state(samples, late_value, minutes_ba
     late = step(RULE, status, late_value, status.last_ts - timedelta(minutes=minutes_back))
 
     assert late == status
+
+
+# --- "below the limit" rules (low spread, low COP) --------------------------------
+
+LOW = ThresholdRule(limit=3.0, delay=timedelta(minutes=5), hysteresis=0.5, above=False)
+
+
+def feed_low(values: list[float]) -> AlarmStatus:
+    status = AlarmStatus()
+    for i, value in enumerate(values):
+        status = step(LOW, status, value, T0 + i * timedelta(minutes=1))
+    return status
+
+
+def test_below_rule_fires_when_value_stays_low():
+    assert feed_low([2.0] * 7).state is AlarmState.FIRING
+
+
+def test_below_rule_clears_only_above_limit_plus_hysteresis():
+    assert feed_low([2.0] * 7 + [3.2]).state is AlarmState.FIRING  # inside the band: no flapping
+    assert feed_low([2.0] * 7 + [3.6]).state is AlarmState.NORMAL
+
+
+@given(st.lists(st.floats(min_value=3.0, max_value=100), min_size=1, max_size=60))
+def test_property_below_rule_never_fires_while_value_is_high_enough(values):
+    assert feed_low(values).state is AlarmState.NORMAL

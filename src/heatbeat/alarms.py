@@ -1,10 +1,10 @@
-"""Alarm state machine for a "threshold with duration" rule.
+"""Alarm state machine for a "limit with duration" rule.
 
 What this file does: decides, sample by sample, whether an alarm is NORMAL,
 PENDING (condition just started) or FIRING (condition held long enough). It is
 a pure function: same inputs, same output, no database, no clock. Rules:
 - fire only after the condition held for `delay` (no alarm on a single spike),
-- clear only when the value is back below `limit - hysteresis` (no flapping),
+- clear only when the value is back past `limit -/+ hysteresis` (no flapping),
 - ignore late samples older than the last one seen (decide by event time, S09).
 """
 
@@ -24,6 +24,15 @@ class ThresholdRule:
     limit: float
     delay: timedelta
     hysteresis: float = 0.0
+    above: bool = True  # True: alarm when value > limit; False: when value < limit
+
+    def breached(self, value: float) -> bool:
+        return value > self.limit if self.above else value < self.limit
+
+    def cleared(self, value: float) -> bool:
+        if self.above:
+            return value < self.limit - self.hysteresis
+        return value > self.limit + self.hysteresis
 
 
 @dataclass(frozen=True)
@@ -38,14 +47,13 @@ def step(rule: ThresholdRule, status: AlarmStatus, value: float, ts: datetime) -
     if status.last_ts is not None and ts <= status.last_ts:
         return status  # late or duplicate sample: never changes the decision
 
-    above = value > rule.limit
     status = replace(status, last_ts=ts)
 
     if status.state is AlarmState.NORMAL:
-        return replace(status, state=AlarmState.PENDING, since=ts) if above else status
+        return replace(status, state=AlarmState.PENDING, since=ts) if rule.breached(value) else status
 
     if status.state is AlarmState.PENDING:
-        if not above:
+        if not rule.breached(value):
             return replace(status, state=AlarmState.NORMAL, since=None)
         assert status.since is not None
         if ts - status.since >= rule.delay:
@@ -53,6 +61,6 @@ def step(rule: ThresholdRule, status: AlarmStatus, value: float, ts: datetime) -
         return status
 
     # FIRING
-    if value < rule.limit - rule.hysteresis:
+    if rule.cleared(value):
         return replace(status, state=AlarmState.NORMAL, since=None)
     return status
