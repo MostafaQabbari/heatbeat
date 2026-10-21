@@ -1,10 +1,22 @@
-# What this file does: starts everything Heatbeat needs with one command.
+# What this file does: starts everything Heatbeat needs.
 #
-#   docker compose up -d db mqtt          database + broker only (local development, tests)
-#   docker compose --profile app up -d    + migrations, bridge, API and simulator
+#   docker compose up -d                          database, MQTT broker, Redis, Mailpit (development)
+#   docker compose --profile monitoring up -d     + Prometheus (9090) and Grafana (3300)
+#   docker compose --profile app up -d --build    + all Heatbeat services in containers
 #
 # Ports are bound to 127.0.0.1, so they are reachable from this computer only.
 name: heatbeat
+
+x-app: &app
+  build: .
+  environment: &app-env
+    HB_DB_HOST: db
+    HB_DB_PASSWORD: ${HB_DB_PASSWORD}
+    HB_MQTT_HOST: mqtt
+    HB_REDIS_URL: redis://redis:6379/0
+    HB_SMTP_HOST: mailpit
+    HB_JWT_SECRET: ${HB_JWT_SECRET:-}
+  restart: unless-stopped
 
 services:
   db:
@@ -30,30 +42,64 @@ services:
       - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
       - mqtt-data:/mosquitto/data
 
+  redis:
+    image: redis:7.4.2-alpine
+    ports: ["127.0.0.1:6379:6379"]
+
+  mailpit:  # catches all alarm e-mails; web UI on http://127.0.0.1:8025
+    image: axllent/mailpit:v1.21.8
+    ports: ["127.0.0.1:1025:1025", "127.0.0.1:8025:8025"]
+
+  prometheus:
+    profiles: [monitoring]
+    image: prom/prometheus:v3.1.0
+    ports: ["127.0.0.1:9090:9090"]
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+    extra_hosts: ["host.docker.internal:host-gateway"]
+
+  grafana:
+    profiles: [monitoring]
+    image: grafana/grafana:11.4.0
+    ports: ["127.0.0.1:3300:3000"]
+    environment:
+      GF_AUTH_ANONYMOUS_ENABLED: "true"  # local demo only
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+
   migrate:
+    <<: *app
     profiles: [app]
-    build: .
     command: ["alembic", "upgrade", "head"]
-    environment: &app-env
-      HB_DB_HOST: db
-      HB_DB_PASSWORD: ${HB_DB_PASSWORD}
-      HB_MQTT_HOST: mqtt
+    restart: "no"
     depends_on:
       db: { condition: service_healthy }
 
-  bridge:
+  seed:
+    <<: *app
     profiles: [app]
-    build: .
-    command: ["heatbeat-bridge"]
-    environment: *app-env
+    command: ["heatbeat-seed", "--plants", "9", "--password", "${HB_DEMO_PASSWORD:-change-me-demo}"]
+    restart: "no"
     depends_on:
       migrate: { condition: service_completed_successfully }
+
+  bridge:
+    <<: *app
+    profiles: [app]
+    command: ["heatbeat-bridge"]
+    environment:
+      <<: *app-env
+      HB_API_HOST: 0.0.0.0  # also the metrics listen address
+    depends_on:
+      seed: { condition: service_completed_successfully }
       mqtt: { condition: service_started }
-    restart: unless-stopped
 
   api:
+    <<: *app
     profiles: [app]
-    build: .
     command: ["heatbeat-api"]
     environment:
       <<: *app-env
@@ -61,15 +107,35 @@ services:
     ports: ["127.0.0.1:8000:8000"]
     depends_on:
       migrate: { condition: service_completed_successfully }
-    restart: unless-stopped
+
+  worker:
+    <<: *app
+    profiles: [app]
+    command: ["heatbeat-worker"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      redis: { condition: service_started }
+
+  beat:
+    <<: *app
+    profiles: [app]
+    command: ["heatbeat-beat"]
+    depends_on:
+      redis: { condition: service_started }
 
   simulator:
+    <<: *app
     profiles: [app]
-    build: .
-    command: ["heatbeat-simulator", "--plants", "10", "--backfill-hours", "6", "--with-faults", "--interval", "10"]
-    environment: *app-env
+    command: ["heatbeat-simulator", "--plants", "9", "--backfill-hours", "6", "--with-faults", "--interval", "30"]
     depends_on:
       bridge: { condition: service_started }
+
+  portal:
+    profiles: [app]
+    build: ./portal
+    ports: ["127.0.0.1:8080:80"]
+    depends_on:
+      api: { condition: service_started }
 
 volumes:
   db-data:

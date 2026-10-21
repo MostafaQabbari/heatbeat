@@ -1,0 +1,82 @@
+# What this file does: alert rules. Each one has a runbook entry in docs/operations.md.
+groups:
+  - name: heatbeat
+    rules:
+      - alert: BridgeDown
+        expr: max(up{job="bridge"}) == 0
+        for: 1m
+        labels: {severity: critical}
+        annotations:
+          summary: "No bridge is running: no readings are stored"
+          runbook: "docs/operations.md#bridgedown"
+
+      - alert: DataFreshnessSLO
+        expr: heatbeat_data_freshness_max_seconds > 300
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "A plant has sent no data for more than 5 minutes"
+          runbook: "docs/operations.md#datafreshnessslo"
+
+      - alert: BatchWritesFailing
+        expr: increase(heatbeat_bridge_write_failures_total[5m]) > 0
+        labels: {severity: critical}
+        annotations:
+          summary: "The bridge cannot write to the database (nothing is acknowledged, broker is buffering)"
+          runbook: "docs/operations.md#batchwritesfailing"
+
+      - alert: IngestLagHigh
+        expr: histogram_quantile(0.95, sum(rate(heatbeat_ingest_lag_seconds_bucket[5m])) by (le)) > 30
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "95 % of readings take more than 30 s from device to database"
+          runbook: "docs/operations.md#ingestlaghigh"
+
+      - alert: GatewayClockDrift
+        expr: max(abs(heatbeat_gateway_clock_offset_seconds)) > 60
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "A gateway clock is more than 60 s off (S21)"
+          runbook: "docs/operations.md#gatewayclockdrift"
+
+      - alert: NotificationsDead
+        expr: heatbeat_notifications_dead > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "Alarm notifications could not be delivered and wait for a person"
+          runbook: "docs/operations.md#notificationsdead"
+
+      - alert: NotificationBacklog
+        expr: heatbeat_notifications_pending > 50
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 50 notifications are waiting (worker down or receiver slow)"
+          runbook: "docs/operations.md#notificationbacklog"
+
+      - alert: ApiErrorRate
+        expr: >
+          sum(rate(heatbeat_http_requests_total{status=~"5.."}[5m]))
+          / clamp_min(sum(rate(heatbeat_http_requests_total[5m])), 1e-9) > 0.01
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 1 % of API requests fail with 5xx"
+          runbook: "docs/operations.md#apierrorrate"
+
+      - alert: ApiLatencyHigh
+        expr: histogram_quantile(0.95, sum(rate(heatbeat_http_request_seconds_bucket[5m])) by (le)) > 0.5
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "95th percentile API response time above 500 ms"
+          runbook: "docs/operations.md#apilatencyhigh"
+
+      - alert: CommandsExpiring
+        expr: heatbeat_commands_expired_24h > 0
+        labels: {severity: warning}
+        annotations:
+          summary: "A parameter change got no answer from its gateway in time"
+          runbook: "docs/operations.md#commandsexpiring"

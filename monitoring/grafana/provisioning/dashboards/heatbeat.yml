@@ -1,0 +1,8 @@
+# What this file does: loads the dashboards from /var/lib/grafana/dashboards.
+apiVersion: 1
+providers:
+  - name: heatbeat
+    folder: Heatbeat
+    type: file
+    options:
+      path: /var/lib/grafana/dashboards
