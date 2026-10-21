@@ -1,0 +1,11 @@
+# What this file does: settings for the secret scanner (gitleaks) in CI.
+# Default rules, plus an allowlist for the fake secrets that only the tests use.
+# Real secrets never belong in the repository: they live in .env (git-ignored).
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Fake JWT secrets used by the tests; they protect nothing"
+regexTarget = "line"
+regexes = ['''"(integration-)?test-secret-0123456789abcdef''']
