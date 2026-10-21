@@ -37,6 +37,29 @@ integration:
     - uv sync --locked
     - uv run pytest -m integration
 
+portal:
+  stage: quality
+  image: mcr.microsoft.com/playwright:v1.56.0-noble   # Node + browsers for the e2e tests
+  before_script:
+    - cd portal
+  script:
+    - npm ci
+    - npx openapi-typescript ../docs/openapi.json -o /tmp/schema.d.ts && diff /tmp/schema.d.ts src/api/schema.d.ts
+    - npm run typecheck
+    - npm test
+    - npm run test:e2e
+    - npm audit --omit=dev --audit-level=high
+
+monitoring:
+  stage: quality
+  image:
+    name: prom/prometheus:v3.1.0
+    entrypoint: [""]
+  script:
+    - mkdir -p /tmp/prom && cp monitoring/*.yml /tmp/prom/
+    - sed -i 's#/etc/prometheus/alerts.yml#/tmp/prom/alerts.yml#' /tmp/prom/prometheus.yml
+    - promtool check config /tmp/prom/prometheus.yml
+
 dependency_audit:
   stage: security
   script:
@@ -57,3 +80,4 @@ image:
   services: [docker:27-dind]
   script:
     - docker build -t heatbeat:$CI_COMMIT_SHORT_SHA .
+    - docker build -t heatbeat-portal:$CI_COMMIT_SHORT_SHA portal

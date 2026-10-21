@@ -49,6 +49,41 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+  portal:
+    name: portal (generated API types, types, unit + browser tests, audit)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: portal
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: portal/package-lock.json
+      - run: npm ci
+      - run: npm run generate:api && git diff --exit-code src/api/schema.d.ts   # API types match docs/openapi.json
+      - run: npm run typecheck
+      - run: npm test
+      - run: npx playwright install --with-deps chromium
+      - run: npm run test:e2e            # includes axe accessibility checks
+      - run: npm audit --omit=dev --audit-level=high
+      - if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-traces
+          path: portal/test-results
+
+  monitoring:
+    name: Prometheus config and alert rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: >
+          docker run --rm -v "$PWD/monitoring:/etc/prometheus:ro" --entrypoint promtool
+          prom/prometheus:v3.1.0 check config /etc/prometheus/prometheus.yml
+
   image:
     name: docker image builds
     needs: [quality]
@@ -56,3 +91,4 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: docker build -t heatbeat:${{ github.sha }} .
+      - run: docker build -t heatbeat-portal:${{ github.sha }} portal

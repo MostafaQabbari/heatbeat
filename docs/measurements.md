@@ -35,6 +35,26 @@ PostgreSQL stopped while a 30-minute backlog for 4 plants arrived. The bridge lo
 4 failed batch writes and acknowledged nothing. After the restart all 6,000 rows
 were present, with 6,000 distinct keys (no duplicates).
 
+## Larger backlog (7 days, 20 plants, mixed plant types with faults)
+`heatbeat-simulator --plants 20 --backfill-hours 168 --with-faults --once`: about 1.9 million rows,
+all stored in under 90 s (polled every 10 s, so this is an upper bound), consistent with the
+throughput above. This data set is the one used for `docs/query-plans.md`.
+
+## Failures while data flows (scenario S22)
+Bridge crash, database outage and broker restart, each for 20 s under load: 0 lost and
+0 duplicated readings, all stored within about 2 s of the restart. See `docs/chaos-report.md`
+and ADR 0010 for what the first run found (145 of 200 readings lost) and why.
+
+## API query latency
+On the 2-million-row data set, through the tenant-filtering views (`docs/query-plans.md`):
+latest values of a plant about 60-90 ms, a 6-hour raw series about 40-50 ms, a 7-day
+hourly series about 35-45 ms. Single runs on a VM, not percentiles under load.
+
+## Limits found on the way
+- TimescaleDB 2.17 refuses row-level security on a compressed hypertable (ADR 0005).
+- Changing many rows inside compressed chunks hits `timescaledb.max_tuples_decompressed_per_dml_transaction`
+  (100,000 by default). Migration 0003's downgrade turns the limit off (0) for its own transaction only.
+
 ## How to reproduce
 ```
 uv run heatbeat-bridge

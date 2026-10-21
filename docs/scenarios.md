@@ -36,13 +36,24 @@ Architecture: The Hard Parts (Ford et al.).
 | Main query turns into a full scan | Test fails (fitness function, Hard Parts ch. 1) | `test_integration_storage::test_main_query_uses_the_unique_index` |
 | API code and documentation drift apart | Test fails | `test_openapi.py` |
 
+## Added with tenants, alarms, commands, optimiser and operations
+
+| Id | What goes wrong | Expected behaviour | Source | Tests |
+|---|---|---|---|---|
+| S12 | A query forgets its tenant filter | The database itself only shows the caller's tenant (RLS + filtering views); another tenant's plant gives the same 404 as a missing one | DDIA ch. 7 Multitenancy p. 254-255; ADR 0005 | `test_integration_security::test_s12_*` |
+| S13 | A notification receiver is down | Retried with exponential backoff and jitter, parked as `dead` after the maximum attempts | DDIA ch. 8; SDI ch. 10 | `test_notifier::test_s13_*` |
+| S14 | Crash between saving an alarm and sending the notification | Transactional outbox: alarm and notification written together; idempotency key makes a resend harmless | DDIA ch. 12 p. 507-508 | `test_integration_alarms::test_s14_*` |
+| S15 | Command delivered twice, answer lost, answer late | Applied at most once; expired commands never applied; a late "applied" still counts | DDIA ch. 13 (end-to-end ids); ADR 0008 | `test_commands`, `test_gateway`, `test_integration_commands` (`test_s15_*`) |
+| S16 | Two users change the same parameter | Version check and one-open-command index give 409 instead of a lost update | DDIA ch. 8 "Preventing Lost Updates" | `test_integration_commands::test_s16_*` |
+| S17 | One tenant floods the API | Token bucket per tenant; 429 with `Retry-After`; other tenants unaffected | SDI ch. 4 (rate limiter) | `test_ratelimit::test_s17_*`, `test_api::test_s17_*` |
+| S18 | A paused worker wakes up late / two workers evaluate the same rule | `FOR UPDATE SKIP LOCKED`; a held row is skipped, never evaluated twice | DDIA ch. 8 (process pauses) | `test_integration_alarms::test_s18_*` |
+| S19 | Weather or price source is down or changes its format | Clear error, run marked `partial`, no recommendation without its input | Hard Parts (contracts); own design | `test_external`, `test_optimiser`, `test_integration_optimiser` (`test_s19_*`) |
+| S20 | A savings claim that cannot be checked | Weather-normalised estimate with a 95 % range, tested against simulated data with a known saving | Own design (degree-day regression) | `test_savings::test_s20_*` |
+| S21 | A gateway's clock drifts | Bridge measures offset per gateway, exports a metric, alert fires above 60 s | DDIA ch. 9 "Unreliable Clocks" | `test_observability::test_s21_*` |
+| S22 | Bridge crash, database outage, broker restart while data flows | 0 readings lost, 0 duplicated | DDIA ch. 9 (faults); own chaos script | `scripts/chaos.py`, results in `chaos-report.md`; ADR 0010 |
+
 ## Planned (not built yet)
 
 | Id | Scenario | Plan |
 |---|---|---|
-| S05 | Device clock jumps backwards | Flag readings older than the last one per gateway |
-| S12 | A query forgets its tenant filter | PostgreSQL row-level security (DDIA ch. 7 Multitenancy p. 254-255) |
-| S14 | Crash between saving an alarm and sending the notification | Transactional outbox (DDIA ch. 12 p. 507-508) |
-| S15, S16 | Lost command acknowledgement; two users change one parameter | Command ids, expiry, optimistic version check |
-| S17 | One tenant floods the API | Per-tenant rate limit (SDI ch. 4) |
-| S18 | Paused worker wakes up late | Row locking with `FOR UPDATE SKIP LOCKED` |
+| S05 | Device clock jumps backwards | Flag readings older than the last one per gateway (the drift metric of S21 already shows large jumps) |
