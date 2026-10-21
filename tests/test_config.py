@@ -27,3 +27,15 @@ def test_environment_overrides_default(monkeypatch):
     monkeypatch.setenv("HB_MQTT_PORT", "8883")
 
     assert Settings(_env_file=None).mqtt_port == 8883
+
+
+def test_special_characters_in_password_are_escaped(monkeypatch):
+    monkeypatch.setenv("HB_DB_PASSWORD", "p@ss/word")
+
+    assert "p%40ss%2Fword@" in Settings(_env_file=None).database_url
+
+
+def test_api_listens_only_locally_by_default(monkeypatch):
+    monkeypatch.setenv("HB_DB_PASSWORD", "x")
+
+    assert Settings(_env_file=None).api_host == "127.0.0.1"

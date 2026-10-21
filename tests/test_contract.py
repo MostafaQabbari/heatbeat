@@ -3,7 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
-from heatbeat.contract import TelemetryMessage
+from heatbeat.contract import TelemetryMessage, parse_telemetry_topic, telemetry_topic
 
 
 def valid_message() -> dict:
@@ -61,9 +61,10 @@ def test_broken_sensor_values_are_rejected(bad_value):
 @pytest.mark.parametrize(
     ("field", "bad_value"),
     [
-        ("seq", -1),        # sequence numbers never go negative
-        ("readings", []),   # a message must carry at least one reading
-        ("schema", 0),      # versions start at 1
+        ("seq", -1),  # sequence numbers never go negative
+        ("readings", []),  # a message must carry at least one reading
+        ("schema", 0),  # versions start at 1
+        ("gateway", "gw/+/#"),  # MQTT wildcards and slashes are not allowed in ids
     ],
 )
 def test_invalid_envelope_is_rejected(field, bad_value):
@@ -72,3 +73,18 @@ def test_invalid_envelope_is_rejected(field, bad_value):
 
     with pytest.raises(ValidationError):
         TelemetryMessage.model_validate(data)
+
+
+def test_topic_round_trip():
+    topic = telemetry_topic("gw-0042", "p-17")
+
+    assert topic == "hb/v1/gw-0042/plants/p-17/telemetry"
+    assert parse_telemetry_topic(topic) == ("gw-0042", "p-17")
+
+
+@pytest.mark.parametrize(
+    "topic",
+    ["hb/v2/gw/plants/p/telemetry", "hb/v1/gw/plants/p", "hb/v1/gw/devices/p/telemetry", "other"],
+)
+def test_foreign_topics_are_not_parsed(topic):
+    assert parse_telemetry_topic(topic) is None
