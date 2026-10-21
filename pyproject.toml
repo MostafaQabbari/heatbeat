@@ -9,12 +9,18 @@ authors = [
 requires-python = ">=3.13"
 dependencies = [
     "alembic>=1.20.0",
+    "celery>=5.6.3",
     "fastapi>=0.156.4",
+    "httpx2>=2.15.1",
     "paho-mqtt>=2",
+    "prometheus-client>=0.26.0",
     "psycopg-pool>=3.3.3",
     "psycopg[binary]>=3.3.6",
     "pydantic>=2.14.1",
     "pydantic-settings>=2.16.1",
+    "pyjwt>=2.15.1",
+    "python-multipart>=0.0.32",
+    "redis>=8.1.0",
     "sqlalchemy>=2.1.5",
     "uvicorn[standard]>=0.54.0",
 ]
@@ -25,6 +31,10 @@ heatbeat-bridge = "heatbeat.bridge:main"
 heatbeat-simulator = "heatbeat.simulator:main"
 heatbeat-api = "heatbeat.api.main:run"
 heatbeat-openapi = "heatbeat.api.main:write_openapi"
+heatbeat-seed = "heatbeat.seed:main"
+heatbeat-worker = "heatbeat.worker:worker_main"
+heatbeat-beat = "heatbeat.worker:beat_main"
+heatbeat-job = "heatbeat.worker:run_once_main"
 
 [build-system]
 requires = ["uv_build>=0.11.0,<0.14.0"]
@@ -45,15 +55,16 @@ markers = ["integration: needs the real database and broker (docker compose up -
 addopts = "-m 'not integration'"
 
 [tool.ruff]
-line-length = 110
+line-length = 120
 target-version = "py313"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "S", "SIM", "RUF"]
-ignore = ["S101", "S104", "S311", "RUF001", "RUF003"]
+ignore = ["S101", "S104", "S311", "RUF001", "RUF003", "SIM114"]
 
 [tool.ruff.lint.per-file-ignores]
-"tests/**" = ["S105", "S106"]
+"tests/**" = ["S105", "S106", "S107", "S608"]
+"migrations/**" = ["S608"]  # SQL built only from constants in the migration itself
 
 [tool.mypy]
 python_version = "3.13"
@@ -62,5 +73,9 @@ plugins = ["pydantic.mypy"]
 files = ["src"]
 
 [[tool.mypy.overrides]]
-module = ["paho.*"]
+module = ["paho.*", "celery.*"]
 ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["heatbeat.worker"]
+disallow_untyped_decorators = false  # Celery has no type hints

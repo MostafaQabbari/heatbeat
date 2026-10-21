@@ -39,3 +39,12 @@ def test_api_listens_only_locally_by_default(monkeypatch):
     monkeypatch.setenv("HB_DB_PASSWORD", "x")
 
     assert Settings(_env_file=None).api_host == "127.0.0.1"
+
+
+def test_api_needs_a_jwt_secret_but_other_services_do_not(monkeypatch):
+    monkeypatch.setenv("HB_DB_PASSWORD", "x")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.jwt_secret is None  # the bridge and simulator start without it
+    assert settings.cors_origins == ["http://localhost:5173", "http://127.0.0.1:5173"]
