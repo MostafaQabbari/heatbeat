@@ -4,6 +4,8 @@ What this file does: defines the shape of a telemetry message (Pydantic models)
 and the topic names, so every part of the system agrees on one format.
 """
 
+from typing import Literal
+
 from pydantic import AwareDatetime, BaseModel, ConfigDict, Field
 
 TOPIC_PREFIX = "hb/v1"
@@ -36,6 +38,52 @@ class TelemetryMessage(BaseModel):
     sent_at: AwareDatetime
     plant: str = Field(pattern=ID_PATTERN)
     readings: list[Reading] = Field(min_length=1, max_length=1000)
+
+
+class CommandMessage(BaseModel):
+    """Cloud -> gateway: change one parameter. Never retained; has an expiry."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    schema_version: int = Field(default=1, alias="schema", ge=1)
+    command_id: str = Field(min_length=1, max_length=64)
+    plant: str = Field(pattern=ID_PATTERN)
+    dp: str = Field(min_length=1, max_length=64)
+    value: float = Field(allow_inf_nan=False)
+    expires_at: AwareDatetime
+
+
+class CommandResult(BaseModel):
+    """Gateway -> cloud: what happened to a command."""
+
+    model_config = ConfigDict(extra="ignore", frozen=True)
+
+    schema_version: int = Field(default=1, alias="schema", ge=1)
+    command_id: str = Field(min_length=1, max_length=64)
+    gateway: str = Field(pattern=ID_PATTERN)
+    status: Literal["applied", "rejected", "expired"]
+    applied_value: float | None = None
+    reason: str | None = None
+    at: AwareDatetime
+
+
+COMMAND_RESULT_SUBSCRIPTION = f"{TOPIC_PREFIX}/+/command-results"
+
+
+def command_topic(gateway: str) -> str:
+    return f"{TOPIC_PREFIX}/{gateway}/commands"
+
+
+def command_result_topic(gateway: str) -> str:
+    return f"{TOPIC_PREFIX}/{gateway}/command-results"
+
+
+def gateway_from_topic(topic: str, suffix: str) -> str | None:
+    """Return the gateway id from 'hb/v1/{gateway}/{suffix}', or None."""
+    parts = topic.split("/")
+    if len(parts) == 4 and parts[0:2] == ["hb", "v1"] and parts[3] == suffix:
+        return parts[2]
+    return None
 
 
 def telemetry_topic(gateway: str, plant: str) -> str:

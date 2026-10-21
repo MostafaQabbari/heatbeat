@@ -1,205 +1,149 @@
-"""Plant simulator: fake gas-boiler heating plants that publish over MQTT.
+"""Simulator command line: many simulated plants and gateways talking MQTT.
 
-What this file does: models a gas boiler (heating curve, burner on/off with
-hysteresis, flow and return temperature), can inject faults (short cycling,
-heating curve too high, stuck sensor), and publishes readings exactly like a
-real gateway would. A seed makes every run repeatable.
+What this file does: builds N plants (gas boiler, heat pump, district heating,
+in turn), optionally with faults, publishes their readings like real gateways,
+uploads a backlog on request (like gateways after an outage), and answers
+remote commands. A seed makes every run repeatable.
 
-Run it with:  uv run heatbeat-simulator --plants 5 --backfill-hours 6
+Run it with:  uv run heatbeat-simulator --plants 9 --backfill-hours 6 --with-faults
 """
 
 import argparse
 import json
 import logging
-import math
-import random
-import time
-import uuid
-from dataclasses import dataclass
+import signal
+import threading
 from datetime import UTC, datetime, timedelta
-from enum import StrEnum
 from typing import Any
 
 import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
+from pydantic import ValidationError
 
 from heatbeat.config import Settings
-from heatbeat.contract import telemetry_topic
+from heatbeat.contract import CommandMessage, command_result_topic, gateway_from_topic, telemetry_topic
+from heatbeat.sim.gateway import SimulatedGateway
+from heatbeat.sim.plants import STEP, Fault, PlantType, make_plant, plant_type_for
+from heatbeat.sim.publisher import ReliablePublisher, persistent_session
 
 log = logging.getLogger("heatbeat.simulator")
 
-STEP = timedelta(seconds=30)
+FAULTS_BY_TYPE: dict[PlantType, list[Fault]] = {
+    PlantType.GAS_BOILER: [Fault.SHORT_CYCLING, Fault.CURVE_TOO_HIGH, Fault.STUCK_SENSOR, Fault.LOW_SPREAD],
+    PlantType.HEAT_PUMP: [Fault.COP_DEGRADATION, Fault.CURVE_TOO_HIGH],
+    PlantType.DISTRICT_HEATING: [Fault.LOW_SPREAD, Fault.CURVE_TOO_HIGH],
+}
 
 
-class Fault(StrEnum):
-    SHORT_CYCLING = "short_cycling"  # oversized boiler, tiny hysteresis: many burner starts
-    CURVE_TOO_HIGH = "curve_too_high"  # flow temperature far above what the building needs
-    STUCK_SENSOR = "stuck_sensor"  # flow sensor always reports the same value
-
-
-@dataclass(frozen=True)
-class BoilerConfig:
-    curve_level: float = 30.0  # flow set-point when it is 20 degC outside
-    curve_slope: float = 1.4  # extra degrees of flow per degree colder outside
-    hysteresis: float = 5.0  # burner switches at set-point +/- this
-    heat_rate: float = 2.0  # degC per step while the burner is on
-    fault: Fault | None = None
-
-
-class GasBoilerPlant:
-    """A simple, deterministic gas boiler model. One `step` = 30 seconds."""
-
-    def __init__(self, seed: int, config: BoilerConfig | None = None) -> None:
-        self.config = config or BoilerConfig()
-        self._rng = random.Random(seed)
-        self.flow = 40.0
-        self.burner_on = False
-        self.burner_starts = 0
-        self._stuck_value: float | None = None
-
-    def outdoor_temp(self, t: datetime) -> float:
-        hours = t.hour + t.minute / 60
-        daily = 6 * math.sin(2 * math.pi * (hours - 9) / 24)  # warmest mid-afternoon
-        return 5 + daily + self._rng.gauss(0, 0.3)
-
-    def setpoint(self, outdoor: float) -> float:
-        cfg = self.config
-        value = cfg.curve_level + cfg.curve_slope * (20 - outdoor)
-        if cfg.fault is Fault.CURVE_TOO_HIGH:
-            value += 15
-        return max(20.0, min(80.0 + 15, value))
-
-    def step(self, t: datetime) -> dict[str, float]:
-        cfg = self.config
-        outdoor = self.outdoor_temp(t)
-        target = self.setpoint(outdoor)
-        hysteresis = 1.0 if cfg.fault is Fault.SHORT_CYCLING else cfg.hysteresis
-        heat_rate = cfg.heat_rate * 3 if cfg.fault is Fault.SHORT_CYCLING else cfg.heat_rate
-
-        if self.burner_on and self.flow > target + hysteresis:
-            self.burner_on = False
-        elif not self.burner_on and self.flow < target - hysteresis:
-            self.burner_on = True
-            self.burner_starts += 1
-
-        if self.burner_on:
-            self.flow += heat_rate
-        else:
-            self.flow -= 0.03 * (self.flow - outdoor)  # cools towards outdoor temperature
-
-        spread = 12.0 if self.burner_on else 5.0
-        flow_reading = self.flow + self._rng.gauss(0, 0.2)
-        if cfg.fault is Fault.STUCK_SENSOR:
-            if self._stuck_value is None:
-                self._stuck_value = round(flow_reading, 1)
-            flow_reading = self._stuck_value
-
-        return {
-            "outdoor_temp": round(outdoor, 2),
-            "flow_temp": round(flow_reading, 2),
-            "return_temp": round(max(outdoor, self.flow - spread + self._rng.gauss(0, 0.2)), 2),
-            "burner_state": 1.0 if self.burner_on else 0.0,
-            "burner_modulation": round(self._rng.uniform(40, 100), 1) if self.burner_on else 0.0,
-        }
-
-
-class SimulatedGateway:
-    """Wraps one plant and builds messages with gateway id, boot id and sequence number."""
-
-    def __init__(self, index: int, plant: GasBoilerPlant) -> None:
-        self.gateway = f"gw-{index:04d}"
-        self.plant_key = f"p-{index:04d}"
-        self.plant = plant
-        self.boot_id = uuid.uuid4().hex[:12]  # new on every start, like a real reboot
-        self.seq = 0
-
-    @property
-    def topic(self) -> str:
-        return telemetry_topic(self.gateway, self.plant_key)
-
-    def message(self, steps: list[tuple[datetime, dict[str, float]]], sent_at: datetime) -> dict[str, Any]:
-        self.seq += 1
-        return {
-            "schema": 1,
-            "gateway": self.gateway,
-            "boot_id": self.boot_id,
-            "seq": self.seq,
-            "sent_at": sent_at.isoformat(),
-            "plant": self.plant_key,
-            "readings": [
-                {"dp": dp, "t": t.isoformat(), "v": value, "q": 0}
-                for t, values in steps
-                for dp, value in values.items()
-            ],
-        }
+def fault_for(index: int, with_faults: bool) -> Fault | None:
+    """Plants 1 to 3 are always healthy; later plants get faults in turn."""
+    round_no = (index - 1) // 3
+    if not with_faults or round_no == 0:
+        return None
+    faults = FAULTS_BY_TYPE[plant_type_for(index)]
+    return faults[(round_no - 1) % len(faults)]
 
 
 def build_gateways(count: int, seed: int, with_faults: bool) -> list[SimulatedGateway]:
-    faults = [None, Fault.SHORT_CYCLING, Fault.CURVE_TOO_HIGH, Fault.STUCK_SENSOR]
-    gateways = []
-    for i in range(1, count + 1):
-        fault = faults[i % len(faults)] if with_faults else None
-        plant = GasBoilerPlant(seed=seed + i, config=BoilerConfig(fault=fault))
-        gateways.append(SimulatedGateway(i, plant))
-    return gateways
+    return [
+        SimulatedGateway(i, make_plant(plant_type_for(i), seed + i, fault_for(i, with_faults)))
+        for i in range(1, count + 1)
+    ]
 
 
-def publish(client: mqtt.Client, gw: SimulatedGateway, payload: dict[str, Any]) -> mqtt.MQTTMessageInfo:
-    return client.publish(gw.topic, json.dumps(payload), qos=1)
+class Simulation:
+    def __init__(self, client: mqtt.Client, gateways: list[SimulatedGateway]) -> None:
+        self.client = client
+        self.by_key = {gw.gateway: gw for gw in gateways}
+        self.lock = threading.Lock()  # plants are stepped by one thread and commanded by another
+        self.out = ReliablePublisher(client)  # store-and-forward, like real gateway firmware
 
+    def publish_readings(self, gw: SimulatedGateway, payload: dict[str, Any]) -> None:
+        self.out.publish(telemetry_topic(gw.gateway, gw.plant_key), json.dumps(payload))
 
-def backfill(client: mqtt.Client, gateways: list[SimulatedGateway], hours: float) -> None:
-    """Upload past hours at once, like a gateway that was offline (a backlog)."""
-    now = datetime.now(UTC).replace(microsecond=0)
-    start = now - timedelta(hours=hours)
-    info = None
-    for gw in gateways:
-        t, batch = start, []
-        while t < now:
-            batch.append((t, gw.plant.step(t)))
-            if len(batch) == 20:
-                info = publish(client, gw, gw.message(batch, now))
-                batch = []
-            t += STEP
-        if batch:
-            info = publish(client, gw, gw.message(batch, now))
-    if info is not None:
-        info.wait_for_publish(timeout=60)
-    log.info("backfill of %.1f h for %d plants published", hours, len(gateways))
+    def backfill(self, hours: float) -> None:
+        """Upload past hours at once, like a gateway that was offline (a backlog)."""
+        now = datetime.now(UTC).replace(microsecond=0)
+        start = now - timedelta(hours=hours)
+        for gw in self.by_key.values():
+            t, batch = start, []
+            while t < now:
+                with self.lock:
+                    batch.append((t, gw.read(t)))
+                if len(batch) == 20:
+                    self.publish_readings(gw, gw.message(batch, now))
+                    batch = []
+                t += STEP
+            if batch:
+                self.publish_readings(gw, gw.message(batch, now))
+        if not self.out.wait_until_confirmed(timeout=300):
+            log.warning("%d backlog messages not yet confirmed by the broker", self.out.pending)
+        log.info("backfill of %.1f h for %d plants published", hours, len(self.by_key))
+
+    def on_command(self, _c: mqtt.Client, _u: object, msg: mqtt.MQTTMessage) -> None:
+        gateway = gateway_from_topic(msg.topic, "commands")
+        gw = self.by_key.get(gateway or "")
+        if gw is None:
+            return
+        try:
+            cmd = CommandMessage.model_validate_json(msg.payload)
+        except ValidationError:
+            log.warning("ignoring invalid command on %s", msg.topic)
+            return
+        with self.lock:
+            result = gw.handle_command(cmd, datetime.now(UTC))
+        log.info("%s: command %s -> %s", gw.gateway, cmd.command_id, result.status)
+        self.client.publish(command_result_topic(gw.gateway), result.model_dump_json(by_alias=True), qos=1)
+
+    def live(self, interval: float, stop: threading.Event) -> None:
+        while not stop.is_set():
+            now = datetime.now(UTC).replace(microsecond=0)
+            for gw in self.by_key.values():
+                with self.lock:
+                    values = gw.read(now)
+                self.publish_readings(gw, gw.message([(now, values)], now))
+            log.info("published live readings for %d plants", len(self.by_key))
+            stop.wait(interval)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Simulate heating plants over MQTT")
-    parser.add_argument("--plants", type=int, default=5)
+    parser.add_argument("--plants", type=int, default=9)
     parser.add_argument("--interval", type=float, default=30.0, help="seconds between live readings")
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--backfill-hours", type=float, default=0.0)
-    parser.add_argument("--with-faults", action="store_true", help="give some plants a fault")
+    parser.add_argument("--with-faults", action="store_true", help="give plants 4 and up a fault")
     parser.add_argument("--once", action="store_true", help="exit after the backfill")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     settings = Settings()
     client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id="heatbeat-simulator", protocol=mqtt.MQTTv5)
-    client.connect(settings.mqtt_host, settings.mqtt_port)
+
+    def on_connect(c: mqtt.Client, _u: object, _f: object, _r: object, _p: object) -> None:
+        c.subscribe("hb/v1/+/commands", qos=1)
+
+    client.on_connect = on_connect  # set BEFORE the publisher wraps it
+    sim = Simulation(client, build_gateways(args.plants, args.seed, args.with_faults))
+    client.on_message = sim.on_command
+    client.connect(settings.mqtt_host, settings.mqtt_port, clean_start=False, properties=persistent_session())
     client.loop_start()
 
-    gateways = build_gateways(args.plants, args.seed, args.with_faults)
-    if args.backfill_hours > 0:
-        backfill(client, gateways, args.backfill_hours)
-
+    # Ctrl+C only sets a flag; the loop then stops between two messages. (An exception
+    # in the middle of a publish could leave the MQTT client's internal locks held.)
+    stop = threading.Event()
+    signal.signal(signal.SIGINT, lambda *_: stop.set())
+    signal.signal(signal.SIGTERM, lambda *_: stop.set())
     try:
-        while not args.once:
-            now = datetime.now(UTC).replace(microsecond=0)
-            for gw in gateways:
-                publish(client, gw, gw.message([(now, gw.plant.step(now))], now))
-            log.info("published live readings for %d plants", len(gateways))
-            time.sleep(args.interval)
-    except KeyboardInterrupt:
-        pass
+        if args.backfill_hours > 0:
+            sim.backfill(args.backfill_hours)
+        if not args.once:
+            sim.live(args.interval, stop)
     finally:
+        sim.out.wait_until_confirmed(timeout=5)
         client.disconnect()
         client.loop_stop()
+        log.info("simulator stopped")
 
 
 if __name__ == "__main__":

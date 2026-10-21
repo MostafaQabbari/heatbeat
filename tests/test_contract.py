@@ -88,3 +88,30 @@ def test_topic_round_trip():
 )
 def test_foreign_topics_are_not_parsed(topic):
     assert parse_telemetry_topic(topic) is None
+
+
+def test_command_message_round_trip():
+    from heatbeat.contract import CommandMessage, command_topic, gateway_from_topic
+
+    msg = CommandMessage.model_validate(
+        {
+            "command_id": "c-1",
+            "plant": "p-17",
+            "dp": "heating_curve_level",
+            "value": 24,
+            "expires_at": "2026-10-21T12:00:00Z",
+        }
+    )
+
+    assert command_topic("gw-0042") == "hb/v1/gw-0042/commands"
+    assert gateway_from_topic("hb/v1/gw-0042/commands", "commands") == "gw-0042"
+    assert msg.schema_version == 1
+
+
+def test_command_result_status_is_a_closed_list():
+    from heatbeat.contract import CommandResult
+
+    with pytest.raises(ValidationError):
+        CommandResult.model_validate(
+            {"command_id": "c", "gateway": "gw-1", "status": "maybe", "at": "2026-10-21T12:00:00Z"}
+        )
