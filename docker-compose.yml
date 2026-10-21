@@ -1,0 +1,76 @@
+# What this file does: starts everything Heatbeat needs with one command.
+#
+#   docker compose up -d db mqtt          database + broker only (local development, tests)
+#   docker compose --profile app up -d    + migrations, bridge, API and simulator
+#
+# Ports are bound to 127.0.0.1, so they are reachable from this computer only.
+name: heatbeat
+
+services:
+  db:
+    image: timescale/timescaledb:2.17.2-pg17
+    environment:
+      POSTGRES_DB: heatbeat
+      POSTGRES_USER: heatbeat
+      POSTGRES_PASSWORD: ${HB_DB_PASSWORD:?set HB_DB_PASSWORD in .env}
+    ports: ["127.0.0.1:5432:5432"]
+    volumes:
+      - db-data:/var/lib/postgresql/data
+      - ./docker/db-init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U heatbeat -d heatbeat"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  mqtt:
+    image: eclipse-mosquitto:2.0.20
+    ports: ["127.0.0.1:1883:1883"]
+    volumes:
+      - ./mosquitto/mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+      - mqtt-data:/mosquitto/data
+
+  migrate:
+    profiles: [app]
+    build: .
+    command: ["alembic", "upgrade", "head"]
+    environment: &app-env
+      HB_DB_HOST: db
+      HB_DB_PASSWORD: ${HB_DB_PASSWORD}
+      HB_MQTT_HOST: mqtt
+    depends_on:
+      db: { condition: service_healthy }
+
+  bridge:
+    profiles: [app]
+    build: .
+    command: ["heatbeat-bridge"]
+    environment: *app-env
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+      mqtt: { condition: service_started }
+    restart: unless-stopped
+
+  api:
+    profiles: [app]
+    build: .
+    command: ["heatbeat-api"]
+    environment:
+      <<: *app-env
+      HB_API_HOST: 0.0.0.0
+    ports: ["127.0.0.1:8000:8000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    restart: unless-stopped
+
+  simulator:
+    profiles: [app]
+    build: .
+    command: ["heatbeat-simulator", "--plants", "10", "--backfill-hours", "6", "--with-faults", "--interval", "10"]
+    environment: *app-env
+    depends_on:
+      bridge: { condition: service_started }
+
+volumes:
+  db-data:
+  mqtt-data:
