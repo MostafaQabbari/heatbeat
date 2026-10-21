@@ -1,0 +1,64 @@
+/* What this file does: the portal's look. Warm "boiler room" accent, high contrast,
+   visible keyboard focus, and status always shown as TEXT + SHAPE, never colour alone. */
+:root {
+  --bg: #f6f4f1;
+  --surface: #ffffff;
+  --surface-2: #efebe6;
+  --text: #1f2328;
+  --muted: #5b6168;
+  --border: #ddd6cd;
+  --accent: #b4441f;
+  --accent-ink: #ffffff;
+  --ok: #1d7a4d;
+  --warn: #9a6200;
+  --bad: #b3261e;
+  --idle: #6b7280;
+  --radius: 10px;
+  --font: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15171a; --surface: #1d2024; --surface-2: #262a30; --text: #e9e6e1; --muted: #a3a9b0;
+    --border: #33383f; --accent: #e0703f; --accent-ink: #15171a; --ok: #4cc38a; --warn: #e2a33c;
+    --bad: #ef6b62; --idle: #9aa1aa; color-scheme: dark;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.5 var(--font); }
+a { color: inherit; }
+h1 { font-size: 1.5rem; margin: 0 0 .25rem; letter-spacing: -0.01em; }
+h2 { font-size: 1.05rem; margin: 0 0 .75rem; }
+:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+main { max-width: 1200px; margin: 0 auto; padding: 1.25rem 1rem 3rem; }
+.muted { color: var(--muted); }
+.mono { font-family: var(--mono); font-size: .9em; }
+.card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 1rem; }
+.grid { display: grid; gap: 1rem; }
+.cols-2 { grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); }
+.row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; }
+.spread { justify-content: space-between; }
+.stack > * + * { margin-top: 1rem; }
+button, .button {
+  font: inherit; border-radius: 8px; border: 1px solid var(--border); background: var(--surface);
+  color: var(--text); padding: .4rem .8rem; cursor: pointer; text-decoration: none;
+}
+button.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); font-weight: 600; }
+button[aria-pressed="true"] { background: var(--surface-2); font-weight: 600; }
+button:disabled { opacity: .55; cursor: not-allowed; }
+input, select { font: inherit; padding: .4rem .55rem; border: 1px solid var(--border); border-radius: 8px;
+  background: var(--surface); color: var(--text); }
+label { display: grid; gap: .25rem; font-size: .9rem; }
+table { width: 100%; border-collapse: collapse; font-size: .92rem; }
+th, td { text-align: left; padding: .45rem .5rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; }
+thead th { font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.badge { display: inline-flex; align-items: center; gap: .35rem; font-size: .8rem; font-weight: 600;
+  padding: .1rem .55rem; border-radius: 999px; border: 1px solid currentColor; white-space: nowrap; }
+.badge.ok { color: var(--ok); } .badge.warn { color: var(--warn); } .badge.bad { color: var(--bad); }
+.badge.idle { color: var(--idle); }
+.notice { padding: .6rem .8rem; border-radius: 8px; border-left: 4px solid var(--warn); background: var(--surface-2); }
+.notice.error { border-left-color: var(--bad); }
+.notice.ok { border-left-color: var(--ok); }
