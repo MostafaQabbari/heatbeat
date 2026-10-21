@@ -1,0 +1,7 @@
+# What this file does: keeps Linux line endings for files that are read inside
+# Linux containers, even when the repo is checked out on Windows.
+* text=auto
+*.conf text eol=lf
+*.sql text eol=lf
+*.yml text eol=lf
+Dockerfile text eol=lf
