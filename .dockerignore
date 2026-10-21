@@ -1,0 +1,10 @@
+# What this file does: keeps local files out of the Docker image (smaller, no secrets).
+.venv/
+.git/
+.env
+**/__pycache__/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+tests/
+docs/

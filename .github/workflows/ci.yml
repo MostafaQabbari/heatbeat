@@ -1,0 +1,58 @@
+# What this file does: GitHub runs these checks on every push and pull request.
+# A red check means: do not merge. (The same pipeline for GitLab is in .gitlab-ci.yml.)
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  quality:
+    name: lint, types, unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --locked            # fails if uv.lock does not match pyproject.toml
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+      - run: uv run mypy
+      - run: uv run pytest               # unit tests, includes the OpenAPI doc check
+
+  integration:
+    name: integration tests (TimescaleDB + Mosquitto)
+    runs-on: ubuntu-latest
+    env:
+      HB_DB_PASSWORD: ci-only-password
+      HB_TEST_DATABASE_URL: postgresql://heatbeat:ci-only-password@127.0.0.1:5432/heatbeat_test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - run: docker compose up -d --wait db mqtt
+      - run: uv sync --locked
+      - run: uv run pytest -m integration
+      - if: failure()
+        run: docker compose logs
+
+  security:
+    name: dependency audit, secret scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0                 # the secret scan looks at the whole history
+      - uses: astral-sh/setup-uv@v6
+      - run: uv export --format requirements-txt --no-dev --no-emit-project -o requirements.txt
+      - run: uvx pip-audit -r requirements.txt --disable-pip
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  image:
+    name: docker image builds
+    needs: [quality]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t heatbeat:${{ github.sha }} .
