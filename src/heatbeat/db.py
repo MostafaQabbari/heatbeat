@@ -63,10 +63,21 @@ class PostgresSink:
     ) -> int:
         now = datetime.now(UTC)
         catalogue = {key: limits for key, (_, limits) in self._datapoints.items()}
-        plant_ids = self._plant_ids(conn, messages)
+
+        # Only provisioned gateways may deliver data.
+        tenants = self._known_gateways(conn, {msg.gateway for _, msg in messages})
+        accepted = []
+        for topic, msg in messages:
+            if msg.gateway in tenants:
+                accepted.append((topic, msg))
+            else:
+                rejections.append(
+                    Rejection(topic, "unknown gateway (not provisioned)", msg.model_dump_json(by_alias=True))
+                )
+        plant_ids = self._plant_ids(conn, accepted, tenants)
 
         ts, plants, dps, values, qualities = [], [], [], [], []
-        for topic, msg in messages:
+        for topic, msg in accepted:
             plant_id, owner = plant_ids[msg.plant]
             if owner != msg.gateway:
                 # A gateway may not write data for a plant that belongs to another one.
@@ -97,12 +108,26 @@ class PostgresSink:
                 )
         return inserted
 
+    def _known_gateways(self, conn: psycopg.Connection, keys: set[str]) -> dict[str, int]:
+        """Return gateway key -> tenant id for provisioned gateways, and mark them as seen."""
+        if not keys:
+            return {}
+        rows = conn.execute(
+            "UPDATE gateway SET last_seen_at = now() WHERE key = ANY(%s) RETURNING key, tenant_id",
+            (sorted(keys),),
+        ).fetchall()
+        return {key: tenant_id for key, tenant_id in rows}
+
     def _plant_ids(
-        self, conn: psycopg.Connection, messages: list[tuple[str, TelemetryMessage]]
+        self,
+        conn: psycopg.Connection,
+        messages: list[tuple[str, TelemetryMessage]],
+        tenants: dict[str, int],
     ) -> dict[str, tuple[int, str]]:
         """Find or register each plant; return key -> (id, owning gateway).
 
-        A plant stays bound to the first gateway that reported it.
+        A new plant joins the tenant of its gateway ("plug and play") and stays
+        bound to the first gateway that reported it.
         """
         first_claim: dict[str, str] = {}
         for _, msg in messages:
@@ -111,15 +136,14 @@ class PostgresSink:
             return {}
         conn.execute(
             """
-            INSERT INTO plant (key, gateway, last_seen_at)
-            SELECT key, gateway, now() FROM unnest(%s::text[], %s::text[]) AS t(key, gateway)
+            INSERT INTO plant (key, gateway, tenant_id, last_seen_at)
+            SELECT key, gateway, tenant_id, now()
+            FROM unnest(%s::text[], %s::text[], %s::integer[]) AS t(key, gateway, tenant_id)
             ON CONFLICT (key) DO UPDATE SET last_seen_at = now()
             """,
-            (list(first_claim), list(first_claim.values())),
+            (list(first_claim), list(first_claim.values()), [tenants[g] for g in first_claim.values()]),
         )
-        rows = conn.execute(
-            "SELECT key, id, gateway FROM plant WHERE key = ANY(%s)", (list(first_claim),)
-        ).fetchall()
+        rows = conn.execute("SELECT key, id, gateway FROM plant WHERE key = ANY(%s)", (list(first_claim),)).fetchall()
         return {key: (plant_id, owner) for key, plant_id, owner in rows}
 
     def close(self) -> None:
